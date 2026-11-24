@@ -123,11 +123,10 @@ MEM_MB=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 ))
 [ -n "$CONCURRENCY" ] || { if [ "$MEM_MB" -lt 3072 ]; then CONCURRENCY=1; else CONCURRENCY=2; fi; }
 [ -n "$MEMORY_HIGH" ] || MEMORY_HIGH="$(( MEM_MB * 70 / 100 ))M"
 [ "$MEM_MB" -ge 1500 ] || warn "only ${MEM_MB} MB RAM: headless Chrome peaked near 870 MB on our 2 GB box; expect swapping or OOM"
-# read os-release in a subshell: sourcing it here would overwrite $NAME
-# shellcheck disable=SC1091
-OS_ID="$( . /etc/os-release 2>/dev/null; echo "${ID:-}" )"
-# shellcheck disable=SC1091
-OS_LIKE="$( . /etc/os-release 2>/dev/null; echo "${ID_LIKE:-}" )"
+# parse os-release instead of sourcing it: sourcing would overwrite $NAME (our unit name)
+os_release_field() { sed -n "s/^$1=//p" /etc/os-release 2>/dev/null | head -n1 | tr -d "\"'"; }
+OS_ID="$(os_release_field ID)"
+OS_LIKE="$(os_release_field ID_LIKE)"
 case " $OS_ID $OS_LIKE " in *" debian "*|*" ubuntu "*) ;; *) warn "untested distro ${OS_ID:-unknown}; continuing" ;; esac
 CHANGED=0   # set to 1 when anything the service reads has changed -> restart
 

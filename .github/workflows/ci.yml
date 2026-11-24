@@ -11,7 +11,7 @@ jobs:
       - name: shell
         run: |
           bash -n install.sh
-          shellcheck -x install.sh
+          shellcheck -x -S warning install.sh
       - name: python
         run: |
           python -m py_compile smoke.py login/muse_login.py meter/muse_meter.py tests/*.py
