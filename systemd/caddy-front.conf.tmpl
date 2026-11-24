@@ -1,0 +1,5 @@
+# Rendered by muse2api-vps-kit install.sh. Gives Caddy the two keys as environment variables,
+# so /etc/caddy/conf.d/@NAME@.caddy contains no secret.
+[Service]
+EnvironmentFile=@ETC_DIR@/muse2api.env
+EnvironmentFile=@ETC_DIR@/front.env

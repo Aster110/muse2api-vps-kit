@@ -1,0 +1,33 @@
+# Rendered by muse2api-vps-kit install.sh. Edit the template and re-run install.sh instead of this file.
+[Unit]
+Description=muse2api (czg86389-hub/muse2api), loopback only, via muse2api-vps-kit
+Documentation=https://github.com/czg86389-hub/muse2api
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+WorkingDirectory=@PREFIX@/app
+Environment=HOME=@STATE_DIR@
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=@ETC_DIR@/muse2api.env
+# 127.0.0.1 only: the admin key travels in URLs, so the raw port must never face the internet.
+ExecStart=@PREFIX@/venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port @PORT@
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+TimeoutStopSec=20
+# Small box: under memory pressure the kernel kills this service (and its Chrome, which
+# inherits the score) before sshd or a VPN. MemoryHigh throttles and reclaims before that.
+OOMScoreAdjust=600
+MemoryHigh=@MEMORY_HIGH@
+# The service cannot rewrite its own code (root-owned) or system files.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

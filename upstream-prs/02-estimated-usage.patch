@@ -1,0 +1,344 @@
+diff --git a/.env.example b/.env.example
+index 5952deb..b9fde2a 100644
+--- a/.env.example
++++ b/.env.example
+@@ -40,3 +40,6 @@ MUSE2API_KEEPALIVE_DISABLED_ACCOUNTS=0
+ MUSE2API_REF_IMAGE_LOCAL_FILES=0
+ # 1：允许 API 请求下载内网/本机 URL；0 时逐跳检查并仅允许公网 IP
+ MUSE2API_REF_IMAGE_PRIVATE_FETCH=0
++
++# 对话接口 usage 估算（0=保持全 0，1=按字符粗估并加响应头 X-Muse2api-Usage: estimated）
++MUSE2API_ESTIMATE_USAGE=0
+diff --git a/README.md b/README.md
+index acbbaa7..0e3af57 100644
+--- a/README.md
++++ b/README.md
+@@ -421,6 +421,7 @@ Nginx 反代需把 `client_max_body_size` 调到 200M 左右，否则大素材
+ | `MUSE2API_CHAT_TIMEOUT` | `300` | 对话生成超时上限（秒） |
+ | `MUSE2API_REF_IMAGE_LOCAL_FILES` | `0` | 默认禁止读取服务器本地路径；仅可信单用户部署可显式设为 `1` 恢复 |
+ | `MUSE2API_REF_IMAGE_PRIVATE_FETCH` | `0` | 默认仅允许公网 URL，并逐跳检查 DNS/重定向、固定已检查 IP、不使用环境代理；显式设为 `1` 才允许私网/本机 URL |
++| `MUSE2API_ESTIMATE_USAGE` | `0` | 对话接口（chat / responses）的 `usage` 默认全 0（muse.ai 网页不给 token 数）；设为 `1` 时按字符粗估（CJK 每字 1，其余每 4 字符 1），并加响应头 `X-Muse2api-Usage: estimated`。只是估算，不是上游计量 |
+ 
+ 两个开关默认均为 `0`：所有生图、图像编辑、图片任务及视频接口都禁止服务器本地路径和私网/本机 URL。Data URL、有效 Base64 和公网 URL 正常使用。只有确认调用方可信且确有需要时，才显式设为 `1` 恢复对应旧能力。
+ 策略拒绝、下载失败、MIME 或大小不合规都会在提交任务前返回 HTTP 400，不会创建一个随后才失败的后台任务。
+diff --git a/app.py b/app.py
+index 0a8b3bb..2e40241 100644
+--- a/app.py
++++ b/app.py
+@@ -42,7 +42,7 @@ import time
+ import uuid
+ import zipfile
+ 
+-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
++from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, Response
+ from fastapi.exceptions import RequestValidationError
+ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                                Response, StreamingResponse)
+@@ -1603,6 +1603,33 @@ def _want_usage(stream_options) -> bool:
+     return False
+ 
+ 
++_CJK_CHARS = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]")
++_ZERO_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
++
++
++def estimate_tokens(text: str | None) -> int:
++    """粗估 token：CJK 字符每字 1 个，其余每 4 个字符 1 个（向上取整）。不是真实计量。"""
++    if not text:
++        return 0
++    cjk = len(_CJK_CHARS.findall(text))
++    return cjk + -(-(len(text) - cjk) // 4)
++
++
++def _chat_usage(prompt: str, completion: str) -> dict:
++    """MUSE2API_ESTIMATE_USAGE=1 时返回估算用量，否则保持原来的全 0。"""
++    if not CFG.estimate_usage:
++        return dict(_ZERO_USAGE)
++    p, c = estimate_tokens(prompt), estimate_tokens(completion)
++    return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
++
++
++def _usage_headers(headers: dict | None = None) -> dict:
++    out = dict(headers or {})
++    if CFG.estimate_usage:
++        out["X-Muse2api-Usage"] = "estimated"
++    return out
++
++
+ def _pace_text(text: str, chunk_size: int = 2, delay: float = 0.012):
+     """把大块文本平滑切分为仿原生 LLM 打字机的微流式 Token。
+     若传入文本本身微小（<= 3 字），直接秒级放行，零延迟；
+@@ -1627,7 +1654,7 @@ _SSE_HEADERS = {
+ 
+ 
+ @app.post("/v1/chat/completions")
+-async def chat_completions(req: ChatRequest, _=Depends(auth)):
++async def chat_completions(req: ChatRequest, response: Response = None, _=Depends(auth)):
+     """OpenAI 兼容的对话接口 —— 各类智能体客户端都能接。
+ 
+     说明：muse.ai 网页是**自动路由**的 agent，界面上没有模型选择器，所有请求
+@@ -1678,7 +1705,14 @@ async def chat_completions(req: ChatRequest, _=Depends(auth)):
+                 # 握手建立瞬间立即发送 role: assistant 首包，让下游客户端秒级捕获光标
+                 yield _sse(_chat_chunk(cid, created, model, {"role": "assistant"}))
+ 
+-                stream_gen = safe_chat_stream(cookies, prompt, expires, timeout, account_id=acc_id)
++                raw_out: list[str] = []
++
++                def _tee(gen):
++                    for piece in gen:
++                        raw_out.append(piece)
++                        yield piece
++
++                stream_gen = _tee(safe_chat_stream(cookies, prompt, expires, timeout, account_id=acc_id))
+                 if not tool_note:
+                     for chunk in stream_gen:
+                         for piece in _pace_text(chunk):
+@@ -1722,7 +1756,7 @@ async def chat_completions(req: ChatRequest, _=Depends(auth)):
+                     yield _sse({"id": cid, "object": "chat.completion.chunk",
+                                 "created": created, "model": model,
+                                 "choices": [],
+-                                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}})
++                                "usage": _chat_usage(prompt, "".join(raw_out))})
+                 yield "data: [DONE]\n\n"
+                 store.mark(acc_id, True, "")
+             except MuseAuthError as exc:
+@@ -1737,7 +1771,8 @@ async def chat_completions(req: ChatRequest, _=Depends(auth)):
+                 yield _sse({"error": {"message": str(exc), "type": "server_error", "code": 502}})
+             except Exception as exc:
+                 yield _sse({"error": {"message": f"内部错误: {exc}", "type": "server_error", "code": 500}})
+-        return StreamingResponse(sync_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
++        return StreamingResponse(sync_stream(), media_type="text/event-stream",
++                                 headers=_usage_headers(_SSE_HEADERS))
+ 
+     def run() -> str:
+         return "".join(safe_chat_stream(cookies, prompt, expires, timeout, account_id=acc_id))
+@@ -1749,7 +1784,9 @@ async def chat_completions(req: ChatRequest, _=Depends(auth)):
+     except MuseGenerationError as exc:
+         raise HTTPException(502, str(exc))
+ 
+-    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
++    usage = _chat_usage(prompt, text)
++    if response is not None:
++        response.headers.update(_usage_headers())
+     if tool_note:
+         calls, rest = parse_tool_calls(text)
+         if calls:
+@@ -1803,7 +1840,7 @@ def _sse_event(event: str, data: dict) -> str:
+ 
+ 
+ @app.post("/v1/responses")
+-async def responses_api(req: ResponsesRequest, _=Depends(auth)):
++async def responses_api(req: ResponsesRequest, response: Response = None, _=Depends(auth)):
+     """OpenAI Responses API —— 新版 Codex 默认走这个端点。
+ 
+     只实现 Codex 实际用到的子集：文本进 → 文本出（含流式事件）。
+@@ -1826,14 +1863,16 @@ async def responses_api(req: ResponsesRequest, _=Depends(auth)):
+ 
+     def envelope(status: str, text: str = "") -> dict:
+         done = status == "completed"
++        u = _chat_usage(prompt, text) if done else _ZERO_USAGE
+         return {"id": rid, "object": "response", "created_at": created,
+                 "status": status, "model": model,
+                 "output": [{"type": "message", "id": mid, "role": "assistant",
+                             "status": "completed" if done else "in_progress",
+                             "content": ([{"type": "output_text", "text": text,
+                                           "annotations": []}] if text else [])}],
+-                "usage": {"input_tokens": 0, "output_tokens": 0,
+-                          "total_tokens": 0}}
++                "usage": {"input_tokens": u["prompt_tokens"],
++                          "output_tokens": u["completion_tokens"],
++                          "total_tokens": u["total_tokens"]}}
+ 
+     if req.stream:
+         def sync_stream():
+@@ -1873,7 +1912,8 @@ async def responses_api(req: ResponsesRequest, _=Depends(auth)):
+                 yield _sse_event("response.failed", {
+                     "type": "response.failed",
+                     "response": envelope("failed")})
+-        return StreamingResponse(sync_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
++        return StreamingResponse(sync_stream(), media_type="text/event-stream",
++                                 headers=_usage_headers(_SSE_HEADERS))
+ 
+     def run() -> str:
+         return "".join(safe_chat_stream(cookies, prompt, expires, timeout, account_id=acc_id))
+@@ -1885,6 +1925,8 @@ async def responses_api(req: ResponsesRequest, _=Depends(auth)):
+     except MuseGenerationError as exc:
+         raise HTTPException(502, str(exc))
+ 
++    if response is not None:
++        response.headers.update(_usage_headers())
+     return envelope("completed", text)
+ 
+ 
+diff --git a/config.py b/config.py
+index 68d9d2f..706a65a 100644
+--- a/config.py
++++ b/config.py
+@@ -119,6 +119,13 @@ class Config:
+     tool_protocol: bool = field(
+         default_factory=lambda: _env("MUSE2API_TOOL_PROTOCOL", "0").strip() != "0")
+ 
++    # 用量估算（默认关闭）。muse.ai 网页不返回 token 数，所以 usage 默认全是 0。
++    # 设 MUSE2API_ESTIMATE_USAGE=1 后，对话类接口（/v1/chat/completions、/v1/responses）
++    # 按字符粗估 token：CJK 字符每字算 1，其余每 4 个字符算 1；响应头带
++    # X-Muse2api-Usage: estimated，提醒下游这是估算值，不是上游计量。
++    estimate_usage: bool = field(
++        default_factory=lambda: _env("MUSE2API_ESTIMATE_USAGE", "0").strip() == "1")
++
+     # 保活设置：是否对已禁用的账号执行自动保活，**默认关闭**。
+     # 开启后，被管理员在后台手动禁用的账号仍会由后台守护进程执行自动保活与 VM 唤醒，
+     # 保持会话活性不失效，但依然不会参与正常业务生图、生视频与对话轮转调度。
+diff --git a/tests/test_estimated_usage.py b/tests/test_estimated_usage.py
+new file mode 100644
+index 0000000..32ea604
+--- /dev/null
++++ b/tests/test_estimated_usage.py
+@@ -0,0 +1,148 @@
++"""Opt-in estimated usage (MUSE2API_ESTIMATE_USAGE=1); offline, no live account.
++
++Run: python tests/test_estimated_usage.py
++"""
++import asyncio
++import json
++import os
++from pathlib import Path
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT))
++HOME = tempfile.TemporaryDirectory(prefix="muse-usage-test-")
++os.environ.update(MUSE2API_HOME=HOME.name, MUSE2API_PROFILE_ROOT=HOME.name,
++                  MUSE2API_KEY="usage-test", MUSE2API_AUTO_UPDATE="0")
++import app  # noqa: E402
++from fastapi import Response  # noqa: E402
++
++PROMPT = "Say hello"
++REPLY = ["Hello ", "world, ", "你好"]
++
++
++def fake_stream(*args, **kwargs):
++    yield from REPLY
++
++
++async def asgi_post(path: str, payload: dict):
++    """One HTTP request through the real ASGI app (auth, injection, serialization)."""
++    body = json.dumps(payload).encode()
++    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
++             "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
++             "root_path": "", "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 18610),
++             "headers": [(b"authorization", b"Bearer usage-test"), (b"content-type", b"application/json"),
++                         (b"content-length", str(len(body)).encode())]}
++    sent, out = [False], {"status": 0, "headers": {}, "body": b""}
++
++    async def receive():
++        if sent[0]:
++            return {"type": "http.disconnect"}
++        sent[0] = True
++        return {"type": "http.request", "body": body, "more_body": False}
++
++    async def send(msg):
++        if msg["type"] == "http.response.start":
++            out["status"] = msg["status"]
++            out["headers"] = {k.decode().lower(): v.decode() for k, v in msg["headers"]}
++        elif msg["type"] == "http.response.body":
++            out["body"] += msg.get("body", b"")
++
++    await app.app(scope, receive, send)
++    return out
++
++
++async def drain(streaming) -> list[str]:
++    out = []
++    async for chunk in streaming.body_iterator:
++        out.append(chunk if isinstance(chunk, str) else chunk.decode())
++    return out
++
++
++class EstimatedUsageTests(unittest.TestCase):
++    def setUp(self):
++        app.store.accounts = []
++        app.store.tasks = {}
++        app.store.add_account({"hatch_sess": "x"}, "a")
++        self.patches = [patch.object(app, "safe_chat_stream", side_effect=fake_stream),
++                        patch.object(app.CFG, "estimate_usage", False)]
++        for p in self.patches:
++            p.start()
++        self.addCleanup(lambda: [p.stop() for p in reversed(self.patches)])
++
++    def chat(self, stream=False):
++        req = app.ChatRequest(model="muse-spark", messages=[{"role": "user", "content": PROMPT}],
++                              stream=stream, stream_options={"include_usage": True} if stream else None)
++        resp = Response()
++        return asyncio.run(app.chat_completions(req, resp)), resp
++
++    def test_estimate_tokens(self):
++        self.assertEqual(app.estimate_tokens(""), 0)
++        self.assertEqual(app.estimate_tokens(None), 0)
++        self.assertEqual(app.estimate_tokens("abcd"), 1)
++        self.assertEqual(app.estimate_tokens("abcde"), 2)
++        self.assertEqual(app.estimate_tokens("你好"), 2)
++        self.assertEqual(app.estimate_tokens("hi 你好"), 3)   # "hi " -> 1, two CJK -> 2
++
++    def test_default_keeps_zero_usage_and_no_header(self):
++        body, resp = self.chat()
++        self.assertEqual(body["usage"], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
++        self.assertNotIn("x-muse2api-usage", resp.headers)
++
++    def test_opt_in_estimates_non_stream(self):
++        app.CFG.estimate_usage = True
++        body, resp = self.chat()
++        u = body["usage"]
++        self.assertEqual(body["choices"][0]["message"]["content"], "".join(REPLY))
++        self.assertEqual(u["completion_tokens"], app.estimate_tokens("".join(REPLY)))
++        self.assertGreater(u["prompt_tokens"], 0)
++        self.assertEqual(u["total_tokens"], u["prompt_tokens"] + u["completion_tokens"])
++        self.assertEqual(resp.headers.get("x-muse2api-usage"), "estimated")
++
++    def test_opt_in_estimates_stream_usage_chunk(self):
++        app.CFG.estimate_usage = True
++        streaming, _ = self.chat(stream=True)
++        self.assertEqual(streaming.headers.get("x-muse2api-usage"), "estimated")
++        chunks = asyncio.run(drain(streaming))
++        usage = [json.loads(c[6:])["usage"] for c in chunks
++                 if c.startswith("data: {") and '"usage"' in c]
++        self.assertEqual(len(usage), 1)
++        self.assertEqual(usage[0]["completion_tokens"], app.estimate_tokens("".join(REPLY)))
++        self.assertTrue(chunks[-1].startswith("data: [DONE]"))
++
++    def test_stream_default_usage_chunk_is_zero(self):
++        streaming, _ = self.chat(stream=True)
++        self.assertNotIn("x-muse2api-usage", streaming.headers)
++        chunks = asyncio.run(drain(streaming))
++        usage = [json.loads(c[6:])["usage"] for c in chunks if c.startswith("data: {") and '"usage"' in c]
++        self.assertEqual(usage, [{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}])
++
++    def test_http_round_trip_sets_header(self):
++        payload = {"model": "gpt-4o", "messages": [{"role": "user", "content": PROMPT}]}
++        res = asyncio.run(asgi_post("/v1/chat/completions", payload))
++        self.assertEqual(res["status"], 200)
++        self.assertNotIn("x-muse2api-usage", res["headers"])
++        self.assertEqual(json.loads(res["body"])["usage"]["total_tokens"], 0)
++        app.CFG.estimate_usage = True
++        res = asyncio.run(asgi_post("/v1/chat/completions", payload))
++        self.assertEqual(res["status"], 200)
++        self.assertEqual(res["headers"].get("x-muse2api-usage"), "estimated")
++        self.assertGreater(json.loads(res["body"])["usage"]["total_tokens"], 0)
++
++    def test_responses_api(self):
++        req = app.ResponsesRequest(model="muse-spark", input=PROMPT)
++        body = asyncio.run(app.responses_api(req, Response()))
++        self.assertEqual(body["usage"], {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
++        app.CFG.estimate_usage = True
++        resp = Response()
++        body = asyncio.run(app.responses_api(req, resp))
++        self.assertEqual(body["usage"]["output_tokens"], app.estimate_tokens("".join(REPLY)))
++        self.assertEqual(body["usage"]["total_tokens"],
++                         body["usage"]["input_tokens"] + body["usage"]["output_tokens"])
++        self.assertEqual(resp.headers.get("x-muse2api-usage"), "estimated")
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)

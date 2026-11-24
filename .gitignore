@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+smoke-*.json
+muse-login-shots/
+*.sqlite
+*.env
+.DS_Store

@@ -1,0 +1,44 @@
+# muse2api HTTPS front, rendered by muse2api-vps-kit install.sh. No secret in this file:
+# {$MUSE_FRONT_KEY} and {$MUSE2API_KEY} are read from the environment at load time
+# (see /etc/systemd/system/caddy.service.d/@NAME@-front.conf).
+# Clients send "Authorization: Bearer <front key>"; Caddy swaps it for the internal key,
+# so the internal admin key never leaves this machine. /admin and / are 404 from outside.
+@DOMAIN@:@HTTPS_PORT@ {
+	request_body {
+		max_size @MAX_BODY@
+	}
+
+	# Generated media: random file names, downloadable without a key (as upstream serves them).
+	@media {
+		method GET HEAD
+		path /v1/media/*
+	}
+	handle @media {
+		reverse_proxy 127.0.0.1:@PORT@
+	}
+
+	@authed {
+		path /v1/* /healthz
+		header Authorization "Bearer {$MUSE_FRONT_KEY}"
+	}
+	handle @authed {
+		reverse_proxy 127.0.0.1:@PORT@ {
+			header_up Authorization "Bearer {$MUSE2API_KEY}"
+			# stream chat tokens immediately; video jobs can run for minutes
+			flush_interval -1
+			transport http {
+				read_timeout 720s
+				write_timeout 720s
+			}
+		}
+	}
+
+	handle /v1/* {
+		header Content-Type application/json
+		respond "{\"error\":{\"message\":\"missing or wrong front key\",\"type\":\"invalid_request_error\",\"code\":401}}" 401
+	}
+
+	handle {
+		respond 404
+	}
+}

@@ -1,0 +1,9 @@
+# Rendered by muse2api-vps-kit install.sh --meter.
+[Unit]
+Description=muse2api meter: quota, tasks and request counts into SQLite
+After=@NAME@.service
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=/usr/bin/python3 @PREFIX@/kit/meter/muse_meter.py collect --db @METER_DB_DIR@/meter.sqlite --base http://127.0.0.1:@PORT@ --key-file @ETC_DIR@/muse2api.env --unit @NAME@.service --quota-every @METER_QUOTA_EVERY@

@@ -1,0 +1,12 @@
+muse2api-vps-kit
+Copyright (c) 2026 Aster110. Licensed under the MIT License (see LICENSE).
+
+This kit installs and runs muse2api (https://github.com/czg86389-hub/muse2api),
+which is licensed separately under the MIT License,
+Copyright (c) 2026 MUSE2API Authors (its authors and contributors).
+The kit does not include or modify muse2api's code: install.sh clones it from
+the upstream repository at a pinned commit. The files upstream-prs/*.patch are
+proposed changes to muse2api and, if contributed, fall under muse2api's license.
+
+Muse and Meta are trademarks of Meta Platforms, Inc. This project is not
+affiliated with or endorsed by Meta.
