@@ -2,7 +2,7 @@
 
 把 [czg86389-hub/muse2api](https://github.com/czg86389-hub/muse2api) 装到**一台小 VPS**（2 核 / 2 GB 就行）上的部署工具包：一条命令装好、服务器上直接登录账号、冒烟测试、按额度计量。
 
-> **致谢与边界**：muse2api 由 [@czg86389-hub](https://github.com/czg86389-hub) 及贡献者开发，MIT 许可。本仓库**不 fork、不修改上游代码**：`install.sh` 从上游仓库拉取并锁定一个 commit（默认 v1.6.12 `f7f5be5`）原样运行。唯一涉及上游代码的是 [`upstream-prs/`](upstream-prs/) 里的补丁草稿，它们只是草稿，没有被本工具包使用。
+> **致谢与边界**：muse2api 由 [@czg86389-hub](https://github.com/czg86389-hub) 及贡献者开发，MIT 许可。本仓库**不 fork、不修改上游代码**：`install.sh` 从上游仓库拉取并锁定一个 commit（默认 v1.6.12 `f7f5be5`）原样运行。唯一涉及上游代码的是 [`upstream-prs/`](upstream-prs/) 里的补丁，已作为 [#66](https://github.com/czg86389-hub/muse2api/pull/66)、[#67](https://github.com/czg86389-hub/muse2api/pull/67) 提给上游，本工具包不使用它们。
 
 > **先看风险**：muse2api 驱动的是 Muse（Meta）的**网页端**，不是官方 API。这样用很可能违反 Meta 的服务条款，账号可能被封。只用不心疼的备用账号、只自己用，不要转售或公开成服务。详见文末[风险](#风险)。
 
@@ -117,7 +117,7 @@ sudo systemctl daemon-reload
 
 ## 路线图
 
-- [ ] 把 [upstream-prs/](upstream-prs/) 里的两份草稿（部署要点文档、可选的用量估算）提给上游。
+- [x] 两份上游 PR 已提（11-24）：[部署要点文档 #66](https://github.com/czg86389-hub/muse2api/pull/66)、[可选的用量估算 #67](https://github.com/czg86389-hub/muse2api/pull/67)，草稿和测试记录在 [upstream-prs/](upstream-prs/)。
 - [ ] 上游的验证码登录（PR #42）合并后，登录改用上游实现。
 - [ ] meter 可选读 Caddy 的 JSON 访问日志，区分被前置 key 挡掉的请求。
 - [ ] 第二个账号到位后，在 2 GB 机器上实测并发 2 的内存峰值。
@@ -137,7 +137,7 @@ sudo systemctl daemon-reload
 
 ## English
 
-**muse2api-vps-kit** deploys [czg86389-hub/muse2api](https://github.com/czg86389-hub/muse2api) (MIT, by @czg86389-hub and contributors) on one small VPS (tested on 2 vCPU / 2 GB, Ubuntu). It does not fork or modify upstream code: it clones upstream at a pinned commit (v1.6.12 by default) and runs it unchanged. Patch drafts for upstream live in `upstream-prs/` and are not used by the kit.
+**muse2api-vps-kit** deploys [czg86389-hub/muse2api](https://github.com/czg86389-hub/muse2api) (MIT, by @czg86389-hub and contributors) on one small VPS (tested on 2 vCPU / 2 GB, Ubuntu). It does not fork or modify upstream code: it clones upstream at a pinned commit (v1.6.12 by default) and runs it unchanged. Patches for upstream (submitted as #66 and #67) live in `upstream-prs/` and are not used by the kit.
 
 Quickstart (VPS in a region where Muse is open: US, Canada, Japan or Singapore per Meta's limited-testing pages):
 
