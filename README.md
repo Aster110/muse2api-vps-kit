@@ -108,12 +108,13 @@ sudo systemctl daemon-reload
 
 用过 `--domain` 时再删 `/etc/caddy/conf.d/muse2api.caddy` 和 `/etc/systemd/system/caddy.service.d/muse2api-front.conf`，然后 `sudo systemctl daemon-reload && sudo systemctl restart caddy`。swap 和 Chrome 不会自动删：`sudo swapoff /swapfile`，删掉 `/etc/fstab` 里的 `/swapfile` 那行和 `/swapfile`；`sudo apt remove google-chrome-stable`。
 
-## 测试
+## 验证
 
-- `python3 tests/test_kit.py`：离线测试，用一个模拟 muse2api 状态码的假服务跑 `smoke.py`（202、轮询、data URL）、meter（不重复计数、不存 URL 参数和提示词）和登录脚本的验证码解析。
+不写测试和注释，上线后在生产读回（装好后跑 `smoke.py`）。
+
 - `install.sh` 在实测 VPS 上用隔离的名字、用户、目录和端口装过一遍（不碰在跑的实例），再跑一遍确认幂等（不重启），然后按字面路径删干净。
 - `--domain` 的 Caddy 前置：模板用 Caddy 在本地对着假服务跑过（前置 key 换内部 key、无 key 401、`/admin` 404、媒体免 key、超大请求体 413），同样的指令在实测 VPS 的 Caddy 2.6.2 上跑着生产流量；但 `install.sh` 里安装和配置 Caddy 的那一段没有在测试机上跑（那台机器的 Caddy 正在服务）。
-- 登录脚本需要真人收验证码，只做了静态检查（`--help`、编译、解析逻辑的单测）。
+- 登录脚本需要真人收验证码，只做了静态检查（`--help`、编译）。
 
 ## 路线图
 

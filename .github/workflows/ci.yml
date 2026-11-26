@@ -14,5 +14,4 @@ jobs:
           shellcheck -x -S warning install.sh
       - name: python
         run: |
-          python -m py_compile smoke.py login/muse_login.py meter/muse_meter.py tests/*.py
-          python tests/test_kit.py
+          python -m py_compile smoke.py login/muse_login.py meter/muse_meter.py
